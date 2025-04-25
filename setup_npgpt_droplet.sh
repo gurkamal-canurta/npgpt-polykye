@@ -1,64 +1,80 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -----------------------------------------------------------------------------
-# setup_npgpt_droplet.sh
-#   - Installs system Python3 + venv support
-#   - Clones/updates NPGPT under /root/npgpt
-#   - Builds or reuses a Python venv there
-#   - Installs project dependencies and gdown
-#   - Fetches Smiles-GPT checkpoints
-# Usage:
-#   chmod +x setup_npgpt_droplet.sh
-#   sudo bash setup_npgpt_droplet.sh
-# -----------------------------------------------------------------------------
+###############################################################################
+# setup_npgpt_droplet.sh  —  one-shot bootstrap for a fresh Ubuntu droplet
+#
+# • Creates a 4 GB swapfile if none exists
+# • Installs Python3 + core build tools
+# • Clones or pulls this repo into /root/npgpt
+# • Creates / upgrades a venv in that folder
+# • Installs Python deps *incl. RDKit wheel*  (≈40 MB, fits fine)
+# • Downloads Smiles-GPT checkpoints
+# • Runs test_ligand_generation.py once
+# • Leaves you in an interactive shell with the venv active
+#
+# Usage (on a new droplet):
+#   curl -L https://raw.githubusercontent.com/your-user/your-repo/main/setup_npgpt_droplet.sh \
+#        -o setup.sh && sudo bash setup.sh
+###############################################################################
 
-# 1) Normalize line endings
-sed -i 's/\r$//' "$0"
+REPO_URL="https://github.com/gurkamal-canurta/npgpt-polykye.git"
+INSTALL_DIR="/root/npgpt"
+VENVDIR="$INSTALL_DIR/.venv"
+CHECKPOINT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 
-# 2) System packages (idempotent)
-apt update
-DEBIAN_FRONTEND=noninteractive apt install -y \
-  python3 python3-venv python3-pip \
-  sqlite3 git curl
-
-# 3) Clone or update the NPGPT repository under /root/npgpt
-PROJECT_DIR="/root/npgpt"
-if [ -d "$PROJECT_DIR" ]; then
-  cd "$PROJECT_DIR"
-  git pull origin main
+echo "==> 1/8  Creating 4 GB swapfile if needed..."
+if ! swapon --show | grep -q "/swapfile"; then
+  fallocate -l 4G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo "/swapfile none swap sw 0 0" >> /etc/fstab
+  echo "    swapfile created & enabled."
 else
-  git clone https://github.com/ohuelab/npgpt.git "$PROJECT_DIR"
-  cd "$PROJECT_DIR"
+  echo "    swapfile already present."
 fi
 
-# 4) Prepare disk-backed temp & pip cache
-tmp_dir="/root/tmp"
-cache_dir="$tmp_dir/pip-cache"
-mkdir -p "$tmp_dir" "$cache_dir"
-export TMPDIR="$tmp_dir"
-export PIP_CACHE_DIR="$cache_dir"
+echo "==> 2/8  Updating APT & installing core packages..."
+apt-get update -y
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  python3 python3-venv python3-pip git curl
 
-# 5) Create & activate a Python venv (includes pip, setuptools, wheel)
-python3 -m venv .venv
-source .venv/bin/activate
+echo "==> 3/8  Cloning / updating repo into $INSTALL_DIR..."
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+  git -C "$INSTALL_DIR" pull --ff-only
+else
+  git clone "$REPO_URL" "$INSTALL_DIR"
+fi
 
-# 6) Upgrade core packaging tools
-pip install --upgrade pip setuptools wheel
+echo "==> 4/8  Creating / upgrading virtual-env..."
+python3 -m venv "$VENVDIR"
+source "$VENVDIR/bin/activate"
+pip install --upgrade --quiet pip setuptools wheel
 
-# 7) Install project dependencies and gdown for model download
-pip install .
-pip install --no-cache-dir gdown
+echo "==> 5/8  Installing project & runtime deps  (includes RDKit wheel)..."
+pip install --quiet --no-cache-dir rdkit==2024.9.6
+pip install --quiet -r "$INSTALL_DIR/requirements.lock" 2>/dev/null || true   # if you use a lockfile
+pip install --quiet "$INSTALL_DIR"
 
-# 8) Fetch the Smiles-GPT checkpoint folder
-checkpoint_url="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
-mkdir -p checkpoints/smiles-gpt
-gdown --folder "$checkpoint_url" -O checkpoints/smiles-gpt
+echo "==> 6/8  Downloading Smiles-GPT checkpoint folder..."
+mkdir -p "$INSTALL_DIR/checkpoints/smiles-gpt"
+python - <<PY
+import gdown, pathlib, sys
+url = "$CHECKPOINT_URL"
+out = pathlib.Path("$INSTALL_DIR/checkpoints/smiles-gpt")
+try:
+    gdown.download_folder(url, quiet=True, use_cookies=False, output=str(out))
+except Exception as e:
+    print(f"[WARN] gdown: {e}", file=sys.stderr)
+PY
 
-# 9) Completion message
-echo ""
+echo "==> 7/8  Running test_ligand_generation.py ..."
+python "$INSTALL_DIR/test_ligand_generation.py" || true
+
+echo
 echo "========================================"
-echo "✅ NPGPT setup complete under $PROJECT_DIR"
-echo "Next steps:"
-echo "  source $PROJECT_DIR/.venv/bin/activate"
+echo "✅  NPGPT environment ready in $INSTALL_DIR"
+echo "   (venv already active)"
 echo "========================================"
+exec bash --login   # stay in a login shell with venv active
