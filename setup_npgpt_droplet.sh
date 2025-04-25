@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+log(){ printf '\e[1;34m%s\e[0m\n' "$*"; }
+
 REPO_URL="https://github.com/gurkamal-canurta/npgpt-polykye.git"
 INSTALL_DIR="/root/npgpt"
 VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
+NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
+PY_PATH_LINE='export PYTHONPATH="/root/npgpt/externals:$PYTHONPATH"'
+
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
-NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
 TOK_DEST="$INSTALL_DIR/externals/smiles-gpt/checkpoints/benchmark-10m"
 
 ###############################################################################
-# 1. swapfile
+log "1/8  swapfile  (idempotent)"
 ###############################################################################
-echo "==> 1/8  swapfile"
-swapon --show | grep -q '/swapfile' || {
-  fallocate -l 4G /swapfile
-  chmod 600 /swapfile && mkswap /swapfile
+if ! swapon --noheadings --show | grep -q '/swapfile'; then
+  fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
   swapon /swapfile
-}
+fi
 
 ###############################################################################
-# 2. APT
+log "2/8  apt  (idempotent)"
 ###############################################################################
-echo "==> 2/8  apt"
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip git curl build-essential
 
 ###############################################################################
-# 3. clone helper repo
+log "3/8  clone helper repo  (update if exists)"
 ###############################################################################
-echo "==> 3/8  git clone"
 if [[ -d $INSTALL_DIR/.git ]]; then
   git -C "$INSTALL_DIR" pull --ff-only
 else
@@ -41,42 +41,45 @@ else
 fi
 
 ###############################################################################
-# 4. venv + requirements
+log "4/8  venv + requirements.runtime.txt  (refresh safely)"
 ###############################################################################
-echo "==> 4/8  venv + pip"
-python3 -m venv "$VENVDIR"
+python3 -m venv "$VENVDIR" 2>/dev/null || true   # creates if missing
 source "$VENVDIR/bin/activate"
 pip install -U --quiet pip setuptools wheel
+
 mkdir -p "$TMPDIR/pip-cache"
 export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
-pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
+
+pip install --upgrade --quiet --no-cache-dir \
+  -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-# 5. vendor npgpt source, patch activate script
+log "5/8  vendor npgpt source  (update or clone)"
 ###############################################################################
-echo "==> 5/8  vendoring npgpt"
 mkdir -p "$(dirname "$NPGPT_SRC")"
-git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
-echo 'export PYTHONPATH="/root/npgpt/externals:$PYTHONPATH"' \
-  >> "$VENVDIR/bin/activate"
-export PYTHONPATH="/root/npgpt/externals:$PYTHONPATH"
+if [[ -d $NPGPT_SRC/.git ]]; then
+  git -C "$NPGPT_SRC" pull --ff-only
+else
+  git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
+fi
+
+# ensure PYTHONPATH line is present exactly once
+grep -qxF "$PY_PATH_LINE" "$VENVDIR/bin/activate" || \
+  echo "$PY_PATH_LINE" >> "$VENVDIR/bin/activate"
+eval "$PY_PATH_LINE"   # apply to current shell
 
 ###############################################################################
-# 6. checkpoint + tokenizer
+log "6/8  checkpoints  (download only once)"
 ###############################################################################
-echo "==> 6/8  checkpoints"
-mkdir -p "$CKPT_DIR" "$TOK_DEST"
-python - <<'PY'
+python - <<PY
 # coding: utf-8
-import pathlib, shutil, gdown, sys
-ckpt = pathlib.Path("/root/npgpt/checkpoints/smiles-gpt")
-tok  = pathlib.Path("/root/npgpt/externals/smiles-gpt/checkpoints/benchmark-10m")
-url  = "https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
-ckpt.mkdir(parents=True, exist_ok=True)
-tok.mkdir(parents=True, exist_ok=True)
+import pathlib, shutil, gdown, sys, os
+ckpt = pathlib.Path("$CKPT_DIR"); ckpt.mkdir(parents=True, exist_ok=True)
+tok  = pathlib.Path("$TOK_DEST"); tok.mkdir(parents=True, exist_ok=True)
 
 if not any(ckpt.iterdir()):
-    gdown.download_folder(url, quiet=False, use_cookies=False, output=str(ckpt))
+    gdown.download_folder("$CKPT_URL", quiet=False, use_cookies=False,
+                          output=str(ckpt))
 
 src, dst = ckpt / "tokenizer.json", tok / "tokenizer.json"
 if src.exists() and not dst.exists():
@@ -84,18 +87,24 @@ if src.exists() and not dst.exists():
 PY
 
 ###############################################################################
-# 7. smoke-test
+log "7/8  smoke-test (safe to re-run)"
 ###############################################################################
-echo "==> 7/8  smoke-test"
 cd "$INSTALL_DIR"
-python test_ligand_generation.py || {
-  echo -e "\n[ERROR] Smoke-test failed – see above.\n"
-}
+python - <<'PY'
+import importlib, sys, traceback, pathlib, json, rdkit
+try:
+    from test_ligand_generation import main as test_main
+    test_main()
+except Exception:
+    traceback.print_exc()
+    sys.exit(1)
+PY
 
 ###############################################################################
-# 8. ready
+log "8/8  ready – venv auto-activates on login"
 ###############################################################################
-grep -qF "source $VENVDIR/bin/activate" /root/.bashrc || \
+grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-echo -e "\n✅  Setup complete – venv auto-activates on login."
+
+log "✅  All done – you are now in (.venv)"
 exec bash --login
