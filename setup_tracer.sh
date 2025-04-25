@@ -29,7 +29,7 @@ spec = importlib.util.find_spec("torch")
 if spec is None:
     print("NONE")
 else:
-    import torch
+    import torch, re
     print(re.match(r"\d+\.\d+\.\d+", torch.__version__).group(0))
 PY
 )
@@ -60,18 +60,20 @@ if (( NEED_TORCH )); then
     --index-url https://download.pytorch.org/whl/cpu
 fi
 
-# choose rdkit wheel depending on Python minor
-PY_MINOR=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-if ! python - <<'PY'; then
+# ─── Does rdkit exist? ───────────────────────────────────────────────────────
+if python - <<'PY'
 import importlib.util, sys
 sys.exit(0 if importlib.util.find_spec("rdkit") else 1)
 PY
 then
-  if [[ $PY_MINOR == "3.12" ]]; then
-    pip install -q rdkit==2024.3.5
-  else
-    pip install -q rdkit-pypi==2023.9.5
-  fi
+    log "rdkit already present"
+else
+    PY_MINOR=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    if [[ $PY_MINOR == "3.12" ]]; then
+        pip install -q rdkit==2024.3.5
+    else
+        pip install -q rdkit-pypi==2023.9.5
+    fi
 fi
 
 PYG_URL="https://pytorch-geometric.com/whl/torch-${torch_ver}+cpu.html"
