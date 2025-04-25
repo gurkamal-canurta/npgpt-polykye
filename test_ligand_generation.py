@@ -12,6 +12,22 @@ import torch
 from npgpt import SmilesGptModel, SmilesGptTrainingConfig, get_tokenizer
 from npgpt.config import SmilesGptGenerationConfig
 
+import argparse
+...
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--temp", type=float, default=1.0, help="sampling temperature")
+    ap.add_argument("--top_p", type=float, default=1.0, help="nucleus top-p")
+    args = ap.parse_args()
+
+    generation_cfg = SmilesGptGenerationConfig(
+        num_samples=5,
+        do_sample=True,
+        temperature=args.temp,
+        top_p=args.top_p,
+    )
+    main(generation_cfg)   # move the for-loop into a main() that accepts cfg
+
 # ---------- utility ----------------------------------------------------------
 def is_valid_smiles(s: str) -> bool:
     """Return True if RDKit can parse & sanitize the SMILES."""
