@@ -24,12 +24,11 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 # 1) Detect or pick a Torch version
 ###############################################################################
 if python - <<'PY'
-import importlib.util, sys
-sys.exit(0 if importlib.util.find_spec("torch") else 1)
+import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("torch") else 1)
 PY
 then
   torch_ver=$(python - <<'PY'
-import re, torch ; print(re.match(r"\d+\.\d+\.\d+", torch.__version__).group(0))
+import re, torch; print(re.match(r"\d+\.\d+\.\d+", torch.__version__).group(0))
 PY
 )
   NEED_TORCH=0
@@ -58,16 +57,10 @@ if (( NEED_TORCH )); then
     --index-url https://download.pytorch.org/whl/cpu
 fi
 
-# ─── RDKit: always latest ────────────────────────────────────────────────────
-if python - <<'PY'
-import importlib.util, sys
-sys.exit(0 if importlib.util.find_spec("rdkit") else 1)
+# ─── RDKit (always latest) ───────────────────────────────────────────────────
+python - <<'PY' || pip install -q rdkit
+import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("rdkit") else 1)
 PY
-then
-  log "rdkit already present"
-else
-  pip install -q rdkit
-fi
 # ---------------------------------------------------------------------------
 
 PYG_URL="https://pytorch-geometric.com/whl/torch-${torch_ver}+cpu.html"
@@ -82,13 +75,22 @@ if [[ -d $INSTALL_DIR/src/.git ]]; then
 else
   git clone --depth 1 https://github.com/sekijima-lab/TRACER.git "$INSTALL_DIR/src"
 fi
+
+###############################################################################
+# 5) Patch config.py for Python 3.12 mutable-default rule
+###############################################################################
+CFG="$INSTALL_DIR/src/config/config.py"
+sed -i 's/from dataclasses import dataclass/from dataclasses import dataclass, field/' "$CFG"
+for cls in prep model train translate GCN_train mcts; do
+  sed -i "s/${cls}: \([A-Za-z_]\+\) = \1()/${cls}: \1 = field(default_factory=\1)/" "$CFG"
+done
 # shellcheck source=/dev/null
 source "$INSTALL_DIR/src/set_up.sh"
 grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" || \
   echo "source $INSTALL_DIR/src/set_up.sh" >> "$VENV_DIR/bin/activate"
 
 ###############################################################################
-# 5) Download checkpoints if missing
+# 6) Download checkpoints if missing
 ###############################################################################
 for relpath in "${!CKPT[@]}"; do
   dst="$INSTALL_DIR/src/ckpts/$relpath"
@@ -98,7 +100,7 @@ for relpath in "${!CKPT[@]}"; do
 done
 
 ###############################################################################
-# 6) Smoke-test (25-step MCTS on luteolin)
+# 7) Smoke-test (25-step MCTS on luteolin)
 ###############################################################################
 log "running MCTS smoke-test ..."
 python "$INSTALL_DIR/src/scripts/mcts.py" \
