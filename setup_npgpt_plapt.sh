@@ -38,7 +38,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
 git lfs install --skip-repo
 
 ###############################################################################
-log "3/8  helper repo"
+log "3/8  clone helper repo"
 ###############################################################################
 if [[ -d $INSTALL_DIR/.git ]]; then
   git -C "$INSTALL_DIR" pull --ff-only
@@ -58,11 +58,14 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor NPGPT + Smiles-GPT"
+log "5/8  vendor npgpt + smiles-gpt"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
-if [[ -d $NPGPT_SRC/.git ]]; then git -C "$NPGPT_SRC" pull --ff-only
-else git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"; fi
+if [[ -d $NPGPT_SRC/.git ]]; then
+  git -C "$NPGPT_SRC" pull --ff-only
+else
+  git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
+fi
 git -C "$NPGPT_SRC" submodule update --init --recursive
 pip install --quiet --no-cache-dir -e "$NPGPT_SRC"
 
@@ -75,7 +78,7 @@ export PYTHONPATH="$ADD_PYTHONPATH${PYTHONPATH+:":$PYTHONPATH"}"
 log "6/8  checkpoints"
 ###############################################################################
 python - <<PY
-import pathlib, gdown, shutil
+import pathlib, shutil, gdown
 ckpt = pathlib.Path("$CKPT_DIR"); ckpt.mkdir(parents=True, exist_ok=True)
 tok  = pathlib.Path("$TOK_DEST"); tok.mkdir(parents=True, exist_ok=True)
 if not any(ckpt.iterdir()):
@@ -91,40 +94,51 @@ cd "$INSTALL_DIR"
 python test_ligand_generation.py || true
 
 ###############################################################################
-log "8/8  PLAPT install + adaptive smoke-test"
+# ─────────────────────────  PLAPT add-on  ────────────────────────────
 ###############################################################################
-# wheels list (clone already put one in repo)
-[[ -f $REQ_PLAPT ]] || echo "onnxruntime pandas scipy diskcache biopython accelerate requests tqdm datasets evaluate pillow huggingface-hub" > "$REQ_PLAPT"
+log "8/8  PLAPT install + model + smoke-test"
+###############################################################################
+# wheels (use file in repo or fallback list)
+if [[ ! -f $REQ_PLAPT ]]; then
+  echo "onnxruntime pandas scipy diskcache biopython accelerate requests tqdm datasets evaluate pillow huggingface-hub" > "$REQ_PLAPT"
+fi
 pip install --quiet --no-cache-dir -r "$REQ_PLAPT"
 
+# clone / update
 mkdir -p "$(dirname "$PLAPT_SRC")"
-if [[ -d $PLAPT_SRC/.git ]]; then git -C "$PLAPT_SRC" pull --ff-only
-else git clone https://github.com/trrt-good/PLAPT.git "$PLAPT_SRC"; fi
-git -C "$PLAPT_SRC" lfs pull --include "models/*.onnx"
+if [[ -d $PLAPT_SRC/.git ]]; then
+  git -C "$PLAPT_SRC" pull --ff-only
+else
+  git clone https://github.com/trrt-good/PLAPT.git "$PLAPT_SRC"
+fi
+
+# download every ONNX model blob
+GIT_LFS_SKIP_SMUDGE=0 git -C "$PLAPT_SRC" lfs fetch --include "models/*.onnx" --exclude ""
+git -C "$PLAPT_SRC" lfs checkout
 
 python - <<'PY'
 import os, sys, pathlib, glob
-os.environ.update({"ORT_LOG_LEVEL":"ERROR","ORT_MIN_LOG_LEVEL":"3"})
+os.environ.update({"ORT_LOG_LEVEL":"ERROR", "ORT_MIN_LOG_LEVEL":"3"})
 plapt_dir = pathlib.Path("/root/npgpt/externals/plapt")
 sys.path.append(str(plapt_dir)); os.chdir(plapt_dir)
 
-# pick any .onnx in models/
-models = sorted(glob.glob("models/*.onnx"))
-if not models:
-    print("[WARN] no ONNX model found in plapt/models – skipped test"); quit()
+onnx_files = sorted(glob.glob("models/*.onnx"))
+if not onnx_files:
+    print("[WARN]  no .onnx model found in plapt/models – smoke-test skipped")
+    quit()
 
 from plapt import Plapt
 prot = "MKTVRQERLKSIVRILERSKEPVSGAQLAEELSVSRQVIVQDIAYLRSLGYNIVATPRGYVLAGG"
 smi  = "CC1=CC=C(C=C1)C2=CC(=NN2C3=CC=C(C=C3)S(=O)(=O)N)C(F)(F)F"
 try:
-    res = Plapt(prediction_module_path=models[0]).score_candidates(prot,[smi])[0]
+    res = Plapt(prediction_module_path=onnx_files[0]).score_candidates(prot,[smi])[0]
     val = next(v for v in res.values() if isinstance(v,(int,float)))
-    print(f"\nPLAPT pKd prediction: {val:.3f}  ✔️\n")
+    print(f"\nPLAPT pKd prediction: {val:.3f} ✔️\n")
 except Exception as e:
-    print("[WARN] PLAPT smoke-test failed:", e)
+    print("[WARN]  PLAPT smoke-test failed:", e)
 PY
 
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-log "✅  Finished – NPGPT & PLAPT both installed. Re-run anytime."
+log "✅  Finished – NPGPT works & PLAPT model loaded. Re-run anytime."
 exec bash --login
