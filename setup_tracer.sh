@@ -41,7 +41,7 @@ fi
 
 # torch-geometric CPU wheel matches the Torch version
 pyg_url="https://pytorch-geometric.com/whl/torch-${torch_ver}+cpu.html"
-pip install rdkit-pypi hydra-core omegaconf pandas scikit-learn tqdm
+pip install rdkit hydra-core omegaconf pandas scikit-learn tqdm
 pip install torch-geometric==2.3.0 -f "$pyg_url"
 
 ###############################################################################
