@@ -2,96 +2,100 @@
 set -euo pipefail
 
 ###############################################################################
-# setup_npgpt_droplet.sh
-#
-# • Creates a 4 GB swapfile (if none exists)
-# • Installs Python3 + pip + build tools
-# • Clones/pulls your repo into /root/npgpt
-# • Creates a venv in /root/npgpt/.venv (re-creates if corrupt)
-# • All pip temp & cache traffic goes to /root/tmp   ← avoids /tmp 512 MB limit
-# • Installs rdkit wheel + requirements.lock (if present)
-# • Downloads Smiles-GPT checkpoints
-# • Activates the venv and leaves you at a login shell
-#
-# Usage, on a brand-new droplet:
-#   curl -L https://raw.githubusercontent.com/gurkamal-canurta/npgpt-polykye/main/setup_npgpt_droplet.sh \
-#        -o setup.sh
-#   sudo bash setup.sh
+#  NPGPT droplet bootstrap (lean CPU build) – 2025-04-25
 ###############################################################################
 
 REPO_URL="https://github.com/gurkamal-canurta/npgpt-polykye.git"
 INSTALL_DIR="/root/npgpt"
 VENVDIR="$INSTALL_DIR/.venv"
-TMPDIR_ON_DISK="/root/tmp"          # pip / wheel build temp lives here
-CHECKPOINT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
-CHECKPOINT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
+TMPDIR="/root/tmp"
 
-echo "==> 1/7  Ensure 4 GB swapfile ..."
-if ! swapon --show | grep -q '/swapfile'; then
+CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
+CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
+NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
+TOK_DEST="$INSTALL_DIR/externals/smiles-gpt/checkpoints/benchmark-10m"
+
+###############################################################################
+# 1. swapfile (4 GB)
+###############################################################################
+echo "==> 1/8  swapfile"
+swapon --show | grep -q '/swapfile' || {
   fallocate -l 4G /swapfile
-  chmod 600 /swapfile
-  mkswap   /swapfile
+  chmod 600 /swapfile && mkswap /swapfile
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  swapon   /swapfile
-  echo "    swapfile created and activated."
-else
-  echo "    swapfile already present."
-fi
+  swapon /swapfile
+}
 
-echo "==> 2/7  Install core APT packages ..."
+###############################################################################
+# 2. APT essentials
+###############################################################################
+echo "==> 2/8  apt"
 apt-get update -y
-DEBIAN_FRONTEND=noninteractive \
-apt-get install -y --no-install-recommends \
-    python3 python3-venv python3-pip git curl build-essential
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  python3 python3-venv python3-pip git curl build-essential
 
-echo "==> 3/7  Clone / pull repo into $INSTALL_DIR ..."
+###############################################################################
+# 3. clone / update helper repo
+###############################################################################
+echo "==> 3/8  git clone"
 if [[ -d $INSTALL_DIR/.git ]]; then
   git -C "$INSTALL_DIR" pull --ff-only
 else
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-echo "==> 4/7  Create / refresh virtual-env ..."
+###############################################################################
+# 4. venv + requirements.runtime.txt
+###############################################################################
+echo "==> 4/8  venv + pip"
 python3 -m venv "$VENVDIR"
-# shellcheck source=/dev/null
 source "$VENVDIR/bin/activate"
-pip install --upgrade --quiet pip setuptools wheel
+pip install -U --quiet pip setuptools wheel
+mkdir -p "$TMPDIR/pip-cache"
+export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
+pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
-# All pip temp files & caches go on the root disk, not /tmp (tmpfs).
-mkdir -p "$TMPDIR_ON_DISK" "$TMPDIR_ON_DISK/pip-cache"
-export TMPDIR="$TMPDIR_ON_DISK"
-export PIP_CACHE_DIR="$TMPDIR_ON_DISK/pip-cache"
+###############################################################################
+# 5. vendor upstream npgpt (no wheel)
+###############################################################################
+echo "==> 5/8  vendoring npgpt source"
+mkdir -p "$(dirname "$NPGPT_SRC")"
+git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
+echo "export PYTHONPATH=\"$INSTALL_DIR/externals:\$PYTHONPATH\"" \
+  > "$VENVDIR/activate.d/99-npgpt-path.sh"
+source "$VENVDIR/activate.d/99-npgpt-path.sh"
 
-echo "==> 5/7  Install runtime Python deps ..."
-# rdkit wheel (≈35 MB) – much lighter than compiling
-pip install --quiet --no-cache-dir rdkit==2024.9.6
-
-# If you keep a requirements.lock, use it – silent if absent
-if [[ -f $INSTALL_DIR/requirements.lock ]]; then
-    pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.lock"
-fi
-
-# (No attempt to pip-install the repo itself; it’s just scripts.)
-
-echo "==> 6/7  Download Smiles-GPT checkpoints (first run only) ..."
-mkdir -p "$CHECKPOINT_DIR"
-python - <<PY
-import pathlib, gdown, sys, os, json
-url = "$CHECKPOINT_URL"
-out = pathlib.Path("$CHECKPOINT_DIR")
-if not any(out.iterdir()):
-    try:
-        gdown.download_folder(url, quiet=False, use_cookies=False, output=str(out))
-    except Exception as e:
-        print("[WARN] checkpoint download failed:", e, file=sys.stderr)
-else:
-    print("    checkpoints already present.")
+###############################################################################
+# 6. download Smiles-GPT checkpoint + tokenizer copy
+###############################################################################
+echo "==> 6/8  checkpoints"
+mkdir -p "$CKPT_DIR" "$TOK_DEST"
+python - <<'PY'
+# coding: utf-8
+import pathlib, shutil, gdown
+url = "https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
+ckpt = pathlib.Path("/root/npgpt/checkpoints/smiles-gpt")
+tok  = pathlib.Path("/root/npgpt/externals/smiles-gpt/checkpoints/benchmark-10m")
+ckpt.mkdir(parents=True, exist_ok=True); tok.mkdir(parents=True, exist_ok=True)
+if not any(ckpt.iterdir()):
+    gdown.download_folder(url, quiet=False, use_cookies=False, output=str(ckpt))
+src = ckpt / "tokenizer.json"; dst = tok / "tokenizer.json"
+if src.exists() and not dst.exists(): shutil.copy2(src, dst)
 PY
 
-echo "==> 7/7  Done.  Dropping into shell with venv active ..."
-echo
-echo "========================================"
-echo "✅  Environment ready  (venv: $VENVDIR)"
-echo "   Try:  python test_ligand_generation.py"
-echo "========================================"
+###############################################################################
+# 7. smoke-test
+###############################################################################
+echo "==> 7/8  smoke-test"
+cd "$INSTALL_DIR"
+python test_ligand_generation.py || {
+  echo -e "\n[ERROR] Smoke-test failed – see above.\n"
+}
+
+###############################################################################
+# 8. ready – auto-activate venv on login
+###############################################################################
+grep -qF "source $VENVDIR/bin/activate" /root/.bashrc || \
+  echo "source $VENVDIR/bin/activate" >> /root/.bashrc
+echo -e "\n✅  Done – login shell will start with (.venv) active."
 exec bash --login
