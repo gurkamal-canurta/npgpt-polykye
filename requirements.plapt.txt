@@ -1,0 +1,14 @@
+# ── extra wheels for PLAPT inference (CPU) ──
+pandas
+scipy
+onnxruntime              # CPU build, pulls protobuf etc.
+diskcache
+biopython
+accelerate
+requests
+tqdm
+datasets
+evaluate
+pillow
+huggingface-hub
+# numpy, torch, transformers, rdkit, scikit-learn already satisfied
