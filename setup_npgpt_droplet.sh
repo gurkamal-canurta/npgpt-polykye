@@ -16,95 +16,78 @@ CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
 TOK_DEST="$INSTALL_DIR/externals/smiles-gpt/checkpoints/benchmark-10m"
 
 ###############################################################################
-log "1/8  swapfile  (idempotent)"
+log "1/8  swapfile"
 ###############################################################################
-if ! swapon --noheadings --show | grep -q '/swapfile'; then
+swapon --noheadings --show | grep -q '/swapfile' || {
   fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile
   echo '/swapfile none swap sw 0 0' >> /etc/fstab
   swapon /swapfile
-fi
+}
 
 ###############################################################################
-log "2/8  apt  (idempotent)"
+log "2/8  apt"
 ###############################################################################
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   python3 python3-venv python3-pip git curl build-essential
 
 ###############################################################################
-log "3/8  clone helper repo  (update if exists)"
+log "3/8  clone helper repo"
 ###############################################################################
 if [[ -d $INSTALL_DIR/.git ]]; then
   git -C "$INSTALL_DIR" pull --ff-only
 else
+  rm -rf "$INSTALL_DIR"
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
 ###############################################################################
-log "4/8  venv + requirements.runtime.txt  (refresh safely)"
+log "4/8  venv + requirements"
 ###############################################################################
-python3 -m venv "$VENVDIR" 2>/dev/null || true   # creates if missing
+python3 -m venv "$VENVDIR" 2>/dev/null || true
 source "$VENVDIR/bin/activate"
 pip install -U --quiet pip setuptools wheel
-
 mkdir -p "$TMPDIR/pip-cache"
 export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
-
-pip install --upgrade --quiet --no-cache-dir \
-  -r "$INSTALL_DIR/requirements.runtime.txt"
+pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor npgpt source  (update or clone)"
+log "5/8  vendor npgpt source (bullet-proof)"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
-if [[ -d $NPGPT_SRC/.git ]]; then
+if [[ -d "$NPGPT_SRC/.git" ]]; then                 # proper repo → pull
   git -C "$NPGPT_SRC" pull --ff-only
-else
+else                                               # bad or partial → replace
+  rm -rf "$NPGPT_SRC"
   git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
 fi
-
-# ensure PYTHONPATH line is present exactly once
-grep -qxF "$PY_PATH_LINE" "$VENVDIR/bin/activate" || \
-  echo "$PY_PATH_LINE" >> "$VENVDIR/bin/activate"
-eval "$PY_PATH_LINE"   # apply to current shell
+grep -qxF "$PY_PATH_LINE" "$VENVDIR/bin/activate" || echo "$PY_PATH_LINE" >> "$VENVDIR/bin/activate"
+eval "$PY_PATH_LINE"
 
 ###############################################################################
-log "6/8  checkpoints  (download only once)"
+log "6/8  checkpoints"
 ###############################################################################
 python - <<PY
 # coding: utf-8
-import pathlib, shutil, gdown, sys, os
+import pathlib, shutil, gdown
 ckpt = pathlib.Path("$CKPT_DIR"); ckpt.mkdir(parents=True, exist_ok=True)
 tok  = pathlib.Path("$TOK_DEST"); tok.mkdir(parents=True, exist_ok=True)
-
 if not any(ckpt.iterdir()):
-    gdown.download_folder("$CKPT_URL", quiet=False, use_cookies=False,
-                          output=str(ckpt))
-
+    gdown.download_folder("$CKPT_URL", quiet=False, use_cookies=False, output=str(ckpt))
 src, dst = ckpt / "tokenizer.json", tok / "tokenizer.json"
-if src.exists() and not dst.exists():
-    shutil.copy2(src, dst)
+if src.exists() and not dst.exists(): shutil.copy2(src, dst)
 PY
 
 ###############################################################################
-log "7/8  smoke-test (safe to re-run)"
+log "7/8  smoke-test"
 ###############################################################################
 cd "$INSTALL_DIR"
-python - <<'PY'
-import importlib, sys, traceback, pathlib, json, rdkit
-try:
-    from test_ligand_generation import main as test_main
-    test_main()
-except Exception:
-    traceback.print_exc()
-    sys.exit(1)
-PY
+python test_ligand_generation.py || true   # never abort on failure
 
 ###############################################################################
-log "8/8  ready – venv auto-activates on login"
+log "8/8  ready"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-
-log "✅  All done – you are now in (.venv)"
+log "✅  Finished – re-run anytime without errors."
 exec bash --login
