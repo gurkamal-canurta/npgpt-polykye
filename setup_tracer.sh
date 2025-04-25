@@ -23,21 +23,19 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 ###############################################################################
 # 1) Detect or pick a Torch version
 ###############################################################################
-torch_ver=$(python - <<'PY'
-import importlib.util, re
-spec = importlib.util.find_spec("torch")
-if spec is None:
-    print("NONE")
-else:
-    import torch, re
-    print(re.match(r"\d+\.\d+\.\d+", torch.__version__).group(0))
+if python - <<'PY'
+import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec("torch") else 1)
+PY
+then
+  torch_ver=$(python - <<'PY'
+import re, torch ; print(re.match(r"\d+\.\d+\.\d+", torch.__version__).group(0))
 PY
 )
-if [[ $torch_ver == "NONE" ]]; then
+  NEED_TORCH=0
+else
   torch_ver="2.0.1"
   NEED_TORCH=1
-else
-  NEED_TORCH=0
 fi
 log "using Torch $torch_ver (+cpu)"
 
@@ -60,21 +58,17 @@ if (( NEED_TORCH )); then
     --index-url https://download.pytorch.org/whl/cpu
 fi
 
-# ─── Does rdkit exist? ───────────────────────────────────────────────────────
+# ─── RDKit: always latest ────────────────────────────────────────────────────
 if python - <<'PY'
 import importlib.util, sys
 sys.exit(0 if importlib.util.find_spec("rdkit") else 1)
 PY
 then
-    log "rdkit already present"
+  log "rdkit already present"
 else
-    PY_MINOR=$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ $PY_MINOR == "3.12" ]]; then
-        pip install -q rdkit==2024.3.5
-    else
-        pip install -q rdkit-pypi==2023.9.5
-    fi
+  pip install -q rdkit
 fi
+# ---------------------------------------------------------------------------
 
 PYG_URL="https://pytorch-geometric.com/whl/torch-${torch_ver}+cpu.html"
 pip install -q torch-geometric==2.3.0 -f "$PYG_URL" \
@@ -104,7 +98,7 @@ for relpath in "${!CKPT[@]}"; do
 done
 
 ###############################################################################
-# 6) Smoke-test (25-step MCTS)
+# 6) Smoke-test (25-step MCTS on luteolin)
 ###############################################################################
 log "running MCTS smoke-test ..."
 python "$INSTALL_DIR/src/scripts/mcts.py" \
