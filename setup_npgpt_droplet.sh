@@ -8,8 +8,8 @@ INSTALL_DIR="/root/npgpt"
 VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
-NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
-ADD_PYTHONPATH='/root/npgpt/externals'
+NPGPT_SRC="$INSTALL_DIR/externals/npgpt"          # repo root
+ADD_PYTHONPATH='/root/npgpt/externals/npgpt/src'  # actual package path
 
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
@@ -52,7 +52,7 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor npgpt (robust)"
+log "5/8  vendor npgpt (clone/update + editable install)"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
 if [[ -d "$NPGPT_SRC/.git" ]]; then
@@ -62,25 +62,18 @@ else
   git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
 fi
 
-# add externals to PYTHONPATH exactly once, safely under `set -u`
+pip install --quiet --no-cache-dir -e "$NPGPT_SRC"    # src-layout aware
+
+# add src path to PYTHONPATH exactly once (safe under set -u)
 if ! grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate"; then
   {
     echo
     echo '# added by npgpt setup'
-    echo 'if [[ -z "${PYTHONPATH+x}" ]]; then'
-    echo "  export PYTHONPATH=\"$ADD_PYTHONPATH\""
-    echo 'else'
-    echo "  export PYTHONPATH=\"$ADD_PYTHONPATH:\$PYTHONPATH\""
-    echo 'fi'
+    echo "export PYTHONPATH=\"$ADD_PYTHONPATH\${PYTHONPATH+:\"\$PYTHONPATH\"}\""
   } >> "$VENVDIR/bin/activate"
 fi
-
-# also apply to current shell
-if [[ -z "${PYTHONPATH+x}" ]]; then
-  export PYTHONPATH="$ADD_PYTHONPATH"
-else
-  export PYTHONPATH="$ADD_PYTHONPATH:$PYTHONPATH"
-fi
+# apply for current shell
+export PYTHONPATH="$ADD_PYTHONPATH${PYTHONPATH+:":$PYTHONPATH"}"
 
 ###############################################################################
 log "6/8  checkpoints"
@@ -93,7 +86,8 @@ tok  = pathlib.Path("$TOK_DEST"); tok.mkdir(parents=True, exist_ok=True)
 if not any(ckpt.iterdir()):
     gdown.download_folder("$CKPT_URL", quiet=False, use_cookies=False, output=str(ckpt))
 src, dst = ckpt / "tokenizer.json", tok / "tokenizer.json"
-if src.exists() and not dst.exists(): shutil.copy2(src, dst)
+if src.exists() and not dst.exists():
+    shutil.copy2(src, dst)
 PY
 
 ###############################################################################
@@ -107,5 +101,6 @@ log "8/8  ready – venv auto-activates"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-log "✅  Finished – safe to re-run anytime."
+
+log "✅  Finished – import path fixed. Re-run anytime."
 exec bash --login
