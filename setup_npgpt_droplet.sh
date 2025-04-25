@@ -9,7 +9,7 @@ VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
 NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
-PY_PATH_LINE='export PYTHONPATH="/root/npgpt/externals:$PYTHONPATH"'
+PY_PATH_LINE='export PYTHONPATH="/root/npgpt/externals:${PYTHONPATH:-}"'
 
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
@@ -52,12 +52,12 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor npgpt source (bullet-proof)"
+log "5/8  vendor npgpt source (robust)"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
-if [[ -d "$NPGPT_SRC/.git" ]]; then                 # proper repo → pull
+if [[ -d "$NPGPT_SRC/.git" ]]; then
   git -C "$NPGPT_SRC" pull --ff-only
-else                                               # bad or partial → replace
+else
   rm -rf "$NPGPT_SRC"
   git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
 fi
@@ -82,12 +82,12 @@ PY
 log "7/8  smoke-test"
 ###############################################################################
 cd "$INSTALL_DIR"
-python test_ligand_generation.py || true   # never abort on failure
+python test_ligand_generation.py || true
 
 ###############################################################################
-log "8/8  ready"
+log "8/8  ready (venv auto-activates)"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-log "✅  Finished – re-run anytime without errors."
+log "✅  Finished – safe to re-run anytime."
 exec bash --login
