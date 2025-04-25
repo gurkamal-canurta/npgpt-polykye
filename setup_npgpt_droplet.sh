@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ###############################################################################
-# setup_npgpt_droplet.sh
+# setup_npgpt_droplet.sh   —  Option B edition (no packaging, use PYTHONPATH)
 # - Creates 4 GB swapfile   (one-time, persistent)
 # - Installs Python3 + build tools
 # - Clones *your* wrapper repo   → /root/npgpt
@@ -10,6 +10,7 @@ set -euo pipefail
 # - Builds / upgrades a venv and installs:
 #       • rdkit wheel            • upstream library
 #       • any requirements.lock you ship (optional)
+# - Adds /root/npgpt to PYTHONPATH instead of pip-installing it
 # - Downloads Smiles-GPT checkpoints
 # - Runs test_ligand_generation.py once
 # - Drops you in an interactive shell with venv active
@@ -58,6 +59,10 @@ pip install --quiet --no-cache-dir rdkit==2024.9.6
 # optional lock-file from your repo
 pip install --quiet -r "$INSTALL_DIR/requirements.lock" 2>/dev/null || true
 
+# ──► Option B tweak: expose wrapper repo via PYTHONPATH instead of pip install
+export PYTHONPATH="$INSTALL_DIR:${PYTHONPATH:-}"
+echo "    Added $INSTALL_DIR to PYTHONPATH."
+
 echo "==> 5b/8  Fetching & installing upstream NPGPT library…"
 if [[ -d "$UPSTREAM_DIR/.git" ]]; then
   git -C "$UPSTREAM_DIR" pull --ff-only
@@ -83,7 +88,7 @@ python "$INSTALL_DIR/test_ligand_generation.py" || true
 
 echo
 echo "========================================"
-echo "✅  NPGPT env ready in $INSTALL_DIR"
-echo "   (venv already active)"
+echo "✅  NPGPT environment ready in $INSTALL_DIR"
+echo "   (virtual-env active; wrapper repo on PYTHONPATH)"
 echo "========================================"
 exec bash --login
