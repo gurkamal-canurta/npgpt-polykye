@@ -7,12 +7,13 @@ INSTALL_DIR="/root/npgpt"
 VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
-NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
-ADD_PYTHONPATH='/root/npgpt/externals/npgpt/src'
+NPGPT_SRC="$INSTALL_DIR/externals/npgpt"                     # main repo
+SGPT_DIR="$NPGPT_SRC/externals/smiles-gpt"                   # sub-module path
+ADD_PYTHONPATH="$NPGPT_SRC/src:$SGPT_DIR"                    # both packages
 
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
-TOK_DEST="$INSTALL_DIR/externals/smiles-gpt/checkpoints/benchmark-10m"
+TOK_DEST="$SGPT_DIR/checkpoints/benchmark-10m"
 
 ###############################################################################
 log "1/8  swapfile"
@@ -62,13 +63,13 @@ else
 fi
 git -C "$NPGPT_SRC" submodule update --init --recursive
 
-pip install --quiet --no-cache-dir -e "$NPGPT_SRC"
-pip install --quiet --no-cache-dir -e "$NPGPT_SRC/externals/smiles-gpt"
+pip install --quiet --no-cache-dir -e "$NPGPT_SRC"   # has pyproject
 
-# add src path once, safe under set -u
-grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate" || \
-  echo "export PYTHONPATH=\"$ADD_PYTHONPATH\${PYTHONPATH+:\":\$PYTHONPATH\"}\"" \
-  >> "$VENVDIR/bin/activate"
+# ── add both src paths to PYTHONPATH exactly once ────────────────────
+if ! grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate"; then
+  echo "export PYTHONPATH=\"$ADD_PYTHONPATH\${PYTHONPATH+:\$PYTHONPATH}\"" \
+       >> "$VENVDIR/bin/activate"
+fi
 export PYTHONPATH="$ADD_PYTHONPATH${PYTHONPATH+:":$PYTHONPATH"}"
 
 ###############################################################################
@@ -92,9 +93,9 @@ cd "$INSTALL_DIR"
 python test_ligand_generation.py || true
 
 ###############################################################################
-log "8/8  ready – venv auto-activates"
+log "8/8  ready (auto-venv)"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-log "✅  Finished – smiles_gpt installed. Re-run anytime."
+log "✅  Finished – smiles_gpt import fixed. Run again anytime."
 exec bash --login
