@@ -9,7 +9,7 @@ VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
 NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
-PY_PATH_LINE='export PYTHONPATH="/root/npgpt/externals:${PYTHONPATH:-}"'
+ADD_PYTHONPATH='/root/npgpt/externals'
 
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
@@ -52,7 +52,7 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor npgpt source (robust)"
+log "5/8  vendor npgpt (robust)"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
 if [[ -d "$NPGPT_SRC/.git" ]]; then
@@ -61,8 +61,26 @@ else
   rm -rf "$NPGPT_SRC"
   git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
 fi
-grep -qxF "$PY_PATH_LINE" "$VENVDIR/bin/activate" || echo "$PY_PATH_LINE" >> "$VENVDIR/bin/activate"
-eval "$PY_PATH_LINE"
+
+# add externals to PYTHONPATH exactly once, safely under `set -u`
+if ! grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate"; then
+  {
+    echo
+    echo '# added by npgpt setup'
+    echo 'if [[ -z "${PYTHONPATH+x}" ]]; then'
+    echo "  export PYTHONPATH=\"$ADD_PYTHONPATH\""
+    echo 'else'
+    echo "  export PYTHONPATH=\"$ADD_PYTHONPATH:\$PYTHONPATH\""
+    echo 'fi'
+  } >> "$VENVDIR/bin/activate"
+fi
+
+# also apply to current shell
+if [[ -z "${PYTHONPATH+x}" ]]; then
+  export PYTHONPATH="$ADD_PYTHONPATH"
+else
+  export PYTHONPATH="$ADD_PYTHONPATH:$PYTHONPATH"
+fi
 
 ###############################################################################
 log "6/8  checkpoints"
@@ -85,7 +103,7 @@ cd "$INSTALL_DIR"
 python test_ligand_generation.py || true
 
 ###############################################################################
-log "8/8  ready (venv auto-activates)"
+log "8/8  ready – venv auto-activates"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
