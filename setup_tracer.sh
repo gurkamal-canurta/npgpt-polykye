@@ -3,36 +3,48 @@ set -euo pipefail
 log(){ printf '\e[1;32m%s\e[0m\n' "$*"; }
 
 ###############################################################################
-# wipe if --fresh
+# Optional wipe
 ###############################################################################
 [[ ${1:-} == "--fresh" ]] && { rm -rf /root/tracer; log "removed /root/tracer"; }
 
 ###############################################################################
-# paths & constants
+# Paths & constants
 ###############################################################################
 INSTALL_DIR=/root/tracer
 VENV_DIR=$INSTALL_DIR/.venv
-TORCH_VER=2.4.1                       # cpu wheel
+TORCH_VER=2.4.1                     # CPU wheel
 CKPT_URL="https://figshare.com/ndownloader/files"
 declare -A CKPT=(
   [Transformer/ckpt_conditional.pth]=45039339
   [Transformer/ckpt_unconditional.pth]=45039342
   [GCN/GCN.pth]=45039345 )
 
-###############################################################################
-# 1‒2  create & activate venv, install core deps
-###############################################################################
-[[ -d $VENV_DIR ]] || python3 -m venv "$VENV_DIR"
-source "$VENV_DIR/bin/activate"
-pip install -qU pip setuptools wheel
-pip install -q torch=="$TORCH_VER"+cpu torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -q rdkit hydra-core omegaconf pandas scikit-learn tqdm requests
-# PyG needs a wheel matching torch cpu build
-pip install -q torch-geometric==2.3.0 \
-  -f "https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
+mkdir -p "$INSTALL_DIR"
+mkdir -p /root/tmp/pip-cache
+export TMPDIR=/root/tmp PIP_CACHE_DIR=/root/tmp/pip-cache
 
 ###############################################################################
-# 3  clone / update TRACER
+# 1. venv – everything happens inside it
+###############################################################################
+[[ -d $VENV_DIR ]] || python3 -m venv "$VENV_DIR"
+# shellcheck source=/dev/null
+source "$VENV_DIR/bin/activate"
+pip install -qU pip setuptools wheel
+
+###############################################################################
+# 2. Core wheels (Torch, RDKit, PyG, utilities) – inside venv
+###############################################################################
+pip install -q torch=="$TORCH_VER"+cpu torchvision \
+    --index-url https://download.pytorch.org/whl/cpu
+pip install -q rdkit
+PYG_URL="https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
+pip install -q torch-geometric==2.3.0 -f "$PYG_URL" \
+               hydra-core omegaconf pandas scikit-learn tqdm requests
+pip install -q torchtext==0.18.0 --no-deps               # ← NEW line
+log "torch ${TORCH_VER}+cpu, torchtext 0.18.0 and all deps installed"
+
+###############################################################################
+# 3. Clone / update TRACER repo
 ###############################################################################
 if [[ -d $INSTALL_DIR/src/.git ]]; then
   git -C "$INSTALL_DIR/src" pull --ff-only
@@ -41,7 +53,7 @@ else
 fi
 
 ###############################################################################
-# 4  patch Python-3.12 dataclass rule in config.py
+# 4. Patch Python-3.12 dataclass (mutable default) in config.py
 ###############################################################################
 python - <<'PY'
 from pathlib import Path, re
@@ -56,42 +68,15 @@ cfg.write_text(txt)
 PY
 
 ###############################################################################
-# 5  **hard-patch model.py to drop torchtext**
+# 5. Add TRACER to PYTHONPATH automatically in future shells
 ###############################################################################
-python - <<'PY'
-from pathlib import Path, re, textwrap
-mdl = Path("/root/tracer/src/Model/Transformer/model.py")
-src = mdl.read_text()
-pattern = r'^\s*import\s+torchtext\.vocab\.vocab\s+as\s+Vocab\s*$'
-if re.search(pattern, src, flags=re.M):
-    replacement = textwrap.dedent("""
-        # patched: torchtext removed for PyTorch ≥2.4 / Python 3.12
-        from types import SimpleNamespace
-        def _make_vocab(counter=None, specials=()):
-            stoi = {}
-            for tok in specials or []:
-                stoi.setdefault(tok, len(stoi))
-            if counter:
-                for tok in counter:
-                    stoi.setdefault(tok, len(stoi))
-            itos = list(stoi)
-            return SimpleNamespace(stoi=stoi, itos=itos)
-        Vocab = SimpleNamespace(make_vocab=_make_vocab)
-    """).strip()
-    src = re.sub(pattern, replacement, src, flags=re.M, count=1)
-    mdl.write_text(src)
-PY
-log "torchtext import replaced with lightweight fallback in model.py"
-
-###############################################################################
-# 6  add TRACER to PYTHONPATH for future shells
-###############################################################################
+# shellcheck source=/dev/null
 source "$INSTALL_DIR/src/set_up.sh"
 grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" || \
   echo "source $INSTALL_DIR/src/set_up.sh" >> "$VENV_DIR/bin/activate"
 
 ###############################################################################
-# 7  download pretrained checkpoints if missing
+# 6. Download pretrained checkpoints if missing
 ###############################################################################
 for rel in "${!CKPT[@]}"; do
   dst="$INSTALL_DIR/src/ckpts/$rel"
@@ -99,12 +84,11 @@ for rel in "${!CKPT[@]}"; do
 done
 
 ###############################################################################
-# 8  run smoke-test
+# 7. Smoke-test
 ###############################################################################
-log "running MCTS smoke-test ..."
+log "running MCTS smoke-test …"
 python "$INSTALL_DIR/src/scripts/mcts.py" \
   --data.input.start_smiles "C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O" \
   --mcts.num_steps 25
-
-log "✅  TRACER installed and smoke-test completed.  Source the venv with:"
+log "✅  TRACER installed and smoke-test completed – activate with:"
 log "   source $VENV_DIR/bin/activate"
