@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 log(){ printf '\e[1;34m%s\e[0m\n' "$*"; }
 
 REPO_URL="https://github.com/gurkamal-canurta/npgpt-polykye.git"
@@ -8,8 +7,8 @@ INSTALL_DIR="/root/npgpt"
 VENVDIR="$INSTALL_DIR/.venv"
 TMPDIR="/root/tmp"
 
-NPGPT_SRC="$INSTALL_DIR/externals/npgpt"          # repo root
-ADD_PYTHONPATH='/root/npgpt/externals/npgpt/src'  # actual package path
+NPGPT_SRC="$INSTALL_DIR/externals/npgpt"
+ADD_PYTHONPATH='/root/npgpt/externals/npgpt/src'
 
 CKPT_URL="https://drive.google.com/drive/folders/1olCPouDkaJ2OBdNaM-G7IU8T6fBpvPMy"
 CKPT_DIR="$INSTALL_DIR/checkpoints/smiles-gpt"
@@ -52,7 +51,7 @@ export TMPDIR PIP_CACHE_DIR="$TMPDIR/pip-cache"
 pip install --quiet --no-cache-dir -r "$INSTALL_DIR/requirements.runtime.txt"
 
 ###############################################################################
-log "5/8  vendor npgpt (clone/update + editable install)"
+log "5/8  vendor npgpt + smiles-gpt"
 ###############################################################################
 mkdir -p "$(dirname "$NPGPT_SRC")"
 if [[ -d "$NPGPT_SRC/.git" ]]; then
@@ -61,18 +60,15 @@ else
   rm -rf "$NPGPT_SRC"
   git clone --depth 1 https://github.com/ohuelab/npgpt.git "$NPGPT_SRC"
 fi
+git -C "$NPGPT_SRC" submodule update --init --recursive
 
-pip install --quiet --no-cache-dir -e "$NPGPT_SRC"    # src-layout aware
+pip install --quiet --no-cache-dir -e "$NPGPT_SRC"
+pip install --quiet --no-cache-dir -e "$NPGPT_SRC/externals/smiles-gpt"
 
-# add src path to PYTHONPATH exactly once (safe under set -u)
-if ! grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate"; then
-  {
-    echo
-    echo '# added by npgpt setup'
-    echo "export PYTHONPATH=\"$ADD_PYTHONPATH\${PYTHONPATH+:\"\$PYTHONPATH\"}\""
-  } >> "$VENVDIR/bin/activate"
-fi
-# apply for current shell
+# add src path once, safe under set -u
+grep -qF "$ADD_PYTHONPATH" "$VENVDIR/bin/activate" || \
+  echo "export PYTHONPATH=\"$ADD_PYTHONPATH\${PYTHONPATH+:\":\$PYTHONPATH\"}\"" \
+  >> "$VENVDIR/bin/activate"
 export PYTHONPATH="$ADD_PYTHONPATH${PYTHONPATH+:":$PYTHONPATH"}"
 
 ###############################################################################
@@ -86,8 +82,7 @@ tok  = pathlib.Path("$TOK_DEST"); tok.mkdir(parents=True, exist_ok=True)
 if not any(ckpt.iterdir()):
     gdown.download_folder("$CKPT_URL", quiet=False, use_cookies=False, output=str(ckpt))
 src, dst = ckpt / "tokenizer.json", tok / "tokenizer.json"
-if src.exists() and not dst.exists():
-    shutil.copy2(src, dst)
+if src.exists() and not dst.exists(): shutil.copy2(src, dst)
 PY
 
 ###############################################################################
@@ -101,6 +96,5 @@ log "8/8  ready – venv auto-activates"
 ###############################################################################
 grep -qxF "source $VENVDIR/bin/activate" /root/.bashrc || \
   echo "source $VENVDIR/bin/activate" >> /root/.bashrc
-
-log "✅  Finished – import path fixed. Re-run anytime."
+log "✅  Finished – smiles_gpt installed. Re-run anytime."
 exec bash --login
