@@ -2,43 +2,44 @@
 set -euo pipefail
 log(){ printf '\e[1;32m%s\e[0m\n' "$*"; }
 
-# ─── 1. Optional clean start ────────────────────────────────────────────────
+# 1) Optional clean slate
 [[ ${1:-} == "--fresh" ]] && { rm -rf /root/tracer; log "wiped /root/tracer"; }
 
-# ─── 2. Constants ────────────────────────────────────────────────────────────
+# 2) Constants
 INSTALL=/root/tracer
 VENV=$INSTALL/.venv
-TORCH_VER=2.3.0         # latest CPU wheel compatible with TRACER’s env.yml
-CKPT_BASE="https://figshare.com/ndownloader/files"
+TORCH=2.3.0                    # CPU wheel compatible with TRACER’s env.yml :contentReference[oaicite:4]{index=4}
+CKPT_URL="https://figshare.com/ndownloader/files"
 declare -A CKPTS=(
   [Transformer/ckpt_conditional.pth]=45039339
   [Transformer/ckpt_unconditional.pth]=45039342
   [GCN/GCN.pth]=45039345
 )
 
-# ─── 3. Create & activate venv, install core deps────────────────────────────
-[[ -d $VENV ]] || python3 -m venv "$VENV"
+# 3) Create & activate venv
+[[ -d $VENV ]] || python3 -m venv "$VENV"           # venv is the standard tool for isolated envs :contentReference[oaicite:5]{index=5}
 # shellcheck source=/dev/null
 source "$VENV/bin/activate"
 
-pip install -qU pip setuptools wheel
-pip install -q torch=="$TORCH_VER"+cpu torchvision \
-    --index-url https://download.pytorch.org/whl/cpu
-# Now install exactly what's in env.yml via pip:
+# 4) Install PyTorch + Hydra-Core (includes OmegaConf), and other deps
+pip install -qU pip setuptools wheel              # upgrade installer tools
 pip install -q \
-  rdkit onnxruntime pandas scipy diskcache biopython accelerate requests tqdm \
-  datasets evaluate pillow huggingface-hub hydra-core omegaconf scikit-learn torch-geometric==2.3.0
+     torch=="$TORCH"+cpu torchvision hydra-core   \
+     --index-url https://download.pytorch.org/whl/cpu  # Hydra-Core brings in OmegaConf automatically :contentReference[oaicite:6]{index=6}
+pip install -q \
+     rdkit onnxruntime pandas scipy diskcache biopython accelerate requests tqdm \
+     datasets evaluate pillow huggingface-hub scikit-learn torch-geometric==2.3.0
 
-log "Installed torch ${TORCH_VER}+cpu and TRACER dependencies"
+log "Installed torch ${TORCH}+cpu, Hydra-Core (with OmegaConf), and TRACER pip deps"
 
-# ─── 4. Clone or update TRACER ────────────────────────────────────────────────
+# 5) Clone or update TRACER
 if [[ -d $INSTALL/src/.git ]]; then
   git -C "$INSTALL/src" pull --ff-only
 else
   git clone --depth 1 https://github.com/sekijima-lab/TRACER.git "$INSTALL/src"
 fi
 
-# ─── 5. Patch Python-3.12 dataclass defaults (mutable default_factory) ───────
+# 6) Patch Python-3.12 dataclass defaults (mutable default_factory)
 python <<PY
 from pathlib import Path
 import re
@@ -56,23 +57,24 @@ txt = re.sub(
 )
 cfg.write_text(txt)
 PY
-log "Patched config.py for dataclass default_factory"
+log "Patched config.py for default_factory (Python 3.12)"
 
-# ─── 6. Ensure TRACER path is in PYTHONPATH ───────────────────────────────────
+# 7) Ensure TRACER path is available
 # shellcheck source=/dev/null
 source "$INSTALL/src/set_up.sh"
-grep -qxF "source $INSTALL/src/set_up.sh" "$VENV/bin/activate" || \
-  echo "source $INSTALL/src/set_up.sh" >> "$VENV/bin/activate"
+grep -qxF "source $INSTALL/src/set_up.sh" "$VENV/bin/activate" \
+  || echo "source $INSTALL/src/set_up.sh" >> "$VENV/bin/activate"
 
-# ─── 7. Download pretrained checkpoints ───────────────────────────────────────
+# 8) Download pretrained checkpoints
 for rel in "${!CKPTS[@]}"; do
   dst="$INSTALL/src/ckpts/$rel"
-  [[ -f $dst ]] && continue
-  mkdir -p "$(dirname "$dst")"
-  curl -Ls -o "$dst" "$CKPT_BASE/${CKPTS[$rel]}"
+  [[ -f $dst ]] || {
+    mkdir -p "$(dirname "$dst")"
+    curl -Ls -o "$dst" "$CKPT_URL/${CKPTS[$rel]}"
+  }
 done
 
-# ─── 8. Smoke-test from within src so data paths resolve ──────────────────────
+# 9) Run MCTS smoke-test via Hydra overrides
 log "Running MCTS smoke-test …"
 pushd "$INSTALL/src" >/dev/null
 python scripts/mcts.py \
@@ -80,5 +82,5 @@ python scripts/mcts.py \
   mcts.n_step=25
 popd >/dev/null
 
-log "✅  TRACER installed & smoke-test passed – activate with:"
-log "   source $VENV/bin/activate"
+log "✅ TRACER successfully installed & smoke-test passed"
+log "Activate your environment with: source $VENV/bin/activate"
