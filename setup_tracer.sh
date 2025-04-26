@@ -2,10 +2,10 @@
 set -euo pipefail
 log(){ printf '\e[1;32m%s\e[0m\n' "$*"; }
 
-# ───────────────────────────── wipe ─────────────────────────────
+# ─────────────────────────────── wipe option ───────────────────────────────
 [[ ${1:-} == "--fresh" ]] && { rm -rf /root/tracer; log "removed /root/tracer"; }
 
-# ─────────────────────────── constants ──────────────────────────
+# ───────────────────────────── constants ────────────────────────────────────
 INSTALL=/root/tracer
 VENV=$INSTALL/.venv
 TORCH=2.3.0
@@ -17,10 +17,9 @@ declare -A W=(
   [GCN/GCN.pth]=45039345
 )
 
-# ────────────────────── 1. venv & deps ─────────────────────────
+# ──────────────────────────── 1. venv & install deps ───────────────────────────
 [[ -d $VENV ]] || python3 -m venv "$VENV"
 source "$VENV/bin/activate"
-
 pip install -qU pip setuptools wheel
 pip install -q torch=="$TORCH"+cpu torchvision torchtext=="$TORCHTEXT" \
     --index-url https://download.pytorch.org/whl/cpu
@@ -29,15 +28,15 @@ pip install -q torch-geometric==2.3.0 \
     -f "https://pytorch-geometric.com/whl/torch-${TORCH}+cpu.html"
 log "torch ${TORCH}+cpu & torchtext ${TORCHTEXT} installed"
 
-# ──────────────────── 2. clone / update TRACER ───────────────────
+# ──────────────────────────── 2. clone / update TRACER ──────────────────────────
 if [[ -d $INSTALL/src/.git ]]; then
   git -C "$INSTALL/src" pull --ff-only
 else
   git clone --depth 1 https://github.com/sekijima-lab/TRACER.git "$INSTALL/src"
 fi
 
-# ───────────────────── 3. patch config.py ───────────────────────
-python - <<'PY'
+# ──────────────────────────── 3. patch config.py (dataclass fix) ───────────────
+python <<PY
 from pathlib import Path
 import re
 cfg = Path("$INSTALL/src/config/config.py")
@@ -50,13 +49,13 @@ txt = re.sub(r'(\w+):\s+([A-Za-z_]\w*)\s*=\s*\2\(\)',
 cfg.write_text(txt)
 PY
 
-# ──────────────────── 4. patch code imports ─────────────────────
-python - <<'PY'
+# ──────────────────────────── 4. patch import sites ───────────────────────────
+python <<PY
 from pathlib import Path
 import re, textwrap
 
 STUB = textwrap.dedent("""
-# fallback stub – replaces torchtext vocab
+# patched fallback for torchtext.vocab.vocab
 from types import SimpleNamespace as _SN
 def _mk(counter=None, specials=()):
     stoi, idx = {}, 0
@@ -77,21 +76,21 @@ for f in (
     "$INSTALL/src/scripts/preprocess.py",
     "$INSTALL/src/scripts/beam_search.py"
 ); do
-  p=Path(f); t=p.read_text()
-  if 'torchtext' in t; then
-    t=re.sub(r'^\s*.*torchtext[^\n]*$', STUB, t, flags=re.M)
-    p.write_text(t)
+  p = Path(f); txt = p.read_text()
+  if 'torchtext' in txt:
+    patched = re.sub(r'^\s*.*torchtext[^\n]*$', STUB, txt, flags=re.M)
+    p.write_text(patched)
   fi
 done
 PY
 
-# ─────────────────── 5. PYTHONPATH setup ───────────────────────
+# ───────────────────────── 5. ensure PYTHONPATH for TRACER ─────────────────────
 # shellcheck source=/dev/null
 source "$INSTALL/src/set_up.sh"
-grep -qxF "source $INSTALL/src/set_up.sh" "$VENV/bin/activate" || \
-  echo "source $INSTALL/src/set_up.sh" >> "$VENV/bin/activate"
+grep -qxF "source $INSTALL/src/set_up.sh" "$VENV/bin/activate" \
+  || echo "source $INSTALL/src/set_up.sh" >> "$VENV/bin/activate"
 
-# ──────────────────── 6. download weights ───────────────────────
+# ──────────────────────────── 6. download pretrained weights ───────────────────
 for rel in "${!W[@]}"; do
   dst="$INSTALL/src/ckpts/$rel"
   [[ -f $dst ]] || {
@@ -100,7 +99,7 @@ for rel in "${!W[@]}"; do
   }
 done
 
-# ───────────────────── 7. smoke-test ───────────────────────────
+# ──────────────────────────── 7. smoke-test (run from src/) ─────────────────
 log "running MCTS smoke-test …"
 pushd "$INSTALL/src" >/dev/null
 python scripts/mcts.py \
@@ -108,5 +107,5 @@ python scripts/mcts.py \
   --mcts.num_steps 25
 popd >/dev/null
 
-log "✅ TRACER installed & smoke-test passed — activate with:"
+log "✅ TRACER installed & smoke-test completed. Activate with:"
 log "   source $VENV/bin/activate"
