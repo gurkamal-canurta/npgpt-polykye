@@ -27,7 +27,7 @@ pip install -qU pip setuptools wheel
 pip install -q \
     torch=="$TORCH_VER"+cpu torchvision torchtext=="$TORCHTEXT_VER" \
     --index-url https://download.pytorch.org/whl/cpu
-pip install -q rdkit tqdm omegaconf hydra-core pandas scikit-learn requests
+pip install -q rdkit tqdm omegoconf hydra-core pandas scikit-learn requests
 pip install -q torch-geometric==2.3.0 \
     -f "https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
 log "Installed torch ${TORCH_VER}+cpu, torchtext ${TORCHTEXT_VER}, and other deps"
@@ -59,7 +59,7 @@ cfg.write_text(txt)
 PY
 log "Patched config.py for dataclass default_factory"
 
-# ─────────── 4. Remove torchtext imports in code ───────────
+# ─────────── 4. Replace torchtext imports in code ───────────
 python <<PY
 from pathlib import Path
 import re, textwrap
@@ -82,12 +82,11 @@ Vocab = _SN(make_vocab=_mk)
 vocab = _mk
 """).strip()
 
-files = [
+for filepath in (
     "/root/tracer/src/Model/Transformer/model.py",
     "/root/tracer/src/scripts/preprocess.py",
     "/root/tracer/src/scripts/beam_search.py"
-]
-for filepath in files:
+):
     p = Path(filepath)
     content = p.read_text()
     if "torchtext" in content:
@@ -101,7 +100,7 @@ for filepath in files:
 PY
 log "Replaced torchtext imports with pure-Python stub in code"
 
-# ─────────── 5. Source TRACER’s set_up.sh in venv ───────────
+# ─────────── 5. Ensure TRACER’s set_up.sh is sourced ───────────
 # shellcheck source=/dev/null
 source "$INSTALL_DIR/src/set_up.sh"
 grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" \
@@ -115,12 +114,12 @@ for rel in "${!CHECKPOINTS[@]}"; do
   curl -Ls -o "$dst" "$CKPT_URL/${CHECKPOINTS[$rel]}"
 done
 
-# ─────────── 7. Smoke-test using Hydra overrides ───────────
+# ─────────── 7. Smoke-test (Hydra overrides quoted) ───────────
 log "Running MCTS smoke-test …"
 pushd "/root/tracer/src" >/dev/null
 python scripts/mcts.py \
-  mcts.in_smiles_file="C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O" \
-  mcts.n_step=25
+  'mcts.in_smiles_file=C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O' \
+  'mcts.n_step=25'
 popd >/dev/null
 
 log "✅ TRACER installation & smoke-test complete"
