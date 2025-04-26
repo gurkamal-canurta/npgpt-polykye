@@ -3,7 +3,7 @@ set -euo pipefail
 log(){ printf '\e[1;34m%s\e[0m\n' "$*"; }
 
 ###############################################################################
-# wipe if requested
+# wipe if --fresh
 ###############################################################################
 [[ ${1:-} == "--fresh" ]] && { rm -rf /root/tracer; log "removed /root/tracer"; }
 
@@ -12,7 +12,7 @@ log(){ printf '\e[1;34m%s\e[0m\n' "$*"; }
 ###############################################################################
 INSTALL_DIR=/root/tracer
 VENV_DIR=$INSTALL_DIR/.venv
-TORCH_VER=2.4.1
+TORCH_VER=2.4.1                     # CPU wheel
 CKPT_URL="https://figshare.com/ndownloader/files"
 declare -A CKPT=(
   [Transformer/ckpt_conditional.pth]=45039339
@@ -27,8 +27,7 @@ source "$VENV_DIR/bin/activate"
 pip install -qU pip setuptools wheel
 pip install -q torch=="$TORCH_VER"+cpu torchvision \
   --index-url https://download.pytorch.org/whl/cpu
-# rid the env of any pre-installed torchtext
-pip uninstall -y -q torchtext || true
+pip uninstall -y -q torchtext || true        # ensure no binary torchtext
 pip install -q rdkit
 PYG_URL="https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
 pip install -q torch-geometric==2.3.0 -f "$PYG_URL" \
@@ -36,7 +35,7 @@ pip install -q torch-geometric==2.3.0 -f "$PYG_URL" \
 log "torch ${TORCH_VER}+cpu and deps installed (no torchtext wheel)"
 
 ###############################################################################
-# 2. clone / pull TRACER
+# 2. clone / update TRACER
 ###############################################################################
 if [[ -d $INSTALL_DIR/src/.git ]]; then
   git -C "$INSTALL_DIR/src" pull --ff-only
@@ -48,7 +47,8 @@ fi
 # 3. patch Python 3.12 dataclass rule
 ###############################################################################
 python - <<'PY'
-from pathlib import Path, re
+from pathlib import Path
+import re, textwrap
 cfg = Path("/root/tracer/src/config/config.py")
 txt = cfg.read_text()
 if 'field(' not in txt:
@@ -60,51 +60,60 @@ cfg.write_text(txt)
 PY
 
 ###############################################################################
-# 4. write sitecustomize stub (executes on every Python start-up)
+# 4. sitecustomize stub for torchtext.vocab.vocab
 ###############################################################################
 python - <<'PY'
 import site, pathlib, textwrap
 code = """
 import sys, types
 def _make_vocab(counter=None, specials=()):
-    stoi = {}
+    stoi, idx = {}, 0
     for tok in specials or []:
-        stoi.setdefault(tok, len(stoi))
+        if tok not in stoi:
+            stoi[tok] = idx; idx += 1
     if counter:
         for tok in counter:
-            stoi.setdefault(tok, len(stoi))
+            if tok not in stoi:
+                stoi[tok] = idx; idx += 1
     return types.SimpleNamespace(stoi=stoi, itos=list(stoi))
 _mod_vocab = types.ModuleType('torchtext.vocab.vocab'); _mod_vocab.make_vocab = _make_vocab
-_mod_tv    = types.ModuleType('torchtext.vocab'); _mod_tv.vocab = _mod_vocab
-_mod_tt    = types.ModuleType('torchtext'); _mod_tt.vocab = _mod_tv
+_mod_tv = types.ModuleType('torchtext.vocab'); _mod_tv.vocab = _mod_vocab
+_mod_tt = types.ModuleType('torchtext'); _mod_tt.vocab = _mod_tv
 sys.modules.update({'torchtext': _mod_tt,
                     'torchtext.vocab': _mod_tv,
                     'torchtext.vocab.vocab': _mod_vocab})
 """
-pth = pathlib.Path(site.getsitepackages()[0]) / "sitecustomize.py"
-pth.write_text(textwrap.dedent(code).lstrip() + "\n")
+path = pathlib.Path(site.getsitepackages()[0]) / "sitecustomize.py"
+path.write_text(textwrap.dedent(code).lstrip() + "\n")
 PY
 log "sitecustomize.py stub installed"
 
 ###############################################################################
-# 5. belt-and-suspenders: rewrite import line in model.py
+# 5. rewrite import line in model.py (fallback safeguard)
 ###############################################################################
 python - <<'PY'
-from pathlib import Path, re, textwrap
+from pathlib import Path
+import re, textwrap
 mdl = Path("/root/tracer/src/Model/Transformer/model.py")
 txt = mdl.read_text()
 if 'torchtext.vocab.vocab' in txt:
-    txt = re.sub(r'import\s+torchtext\.vocab\.vocab\s+as\s+Vocab',
+    txt = re.sub(r'^\s*import\s+torchtext\.vocab\.vocab\s+as\s+Vocab\s*$',
                  textwrap.dedent("""
+                 # patched: replace torchtext with pure-Python stub
                  from types import SimpleNamespace as _SN
-                 def _mk(counter=None, specials=()):  # stubbed vocab
-                     stoi={}; [stoi.setdefault(t,len(stoi)) for t in specials]
+                 def _mk(counter=None, specials=()):
+                     stoi, idx = {}, 0
+                     for tok in specials or []:
+                         if tok not in stoi:
+                             stoi[tok] = idx; idx += 1
                      if counter:
-                         [stoi.setdefault(t,len(stoi)) for t in counter]
+                         for tok in counter:
+                             if tok not in stoi:
+                                 stoi[tok] = idx; idx += 1
                      return _SN(stoi=stoi, itos=list(stoi))
                  Vocab = _SN(make_vocab=_mk)
                  """).strip(),
-                 txt, count=1)
+                 txt, flags=re.M, count=1)
     mdl.write_text(txt)
 PY
 log "model.py import patched"
@@ -117,7 +126,7 @@ grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" || \
   echo "source $INSTALL_DIR/src/set_up.sh" >> "$VENV_DIR/bin/activate"
 
 ###############################################################################
-# 7. weights
+# 7. checkpoints
 ###############################################################################
 for rel in "${!CKPT[@]}"; do
   dst="$INSTALL_DIR/src/ckpts/$rel"
