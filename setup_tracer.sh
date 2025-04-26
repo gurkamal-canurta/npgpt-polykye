@@ -25,12 +25,11 @@ source "$VENV_DIR/bin/activate"
 
 pip install -qU pip setuptools wheel
 pip install -q \
-  torch=="$TORCH_VER"+cpu torchvision torchtext=="$TORCHTEXT_VER" \
+    torch=="$TORCH_VER"+cpu torchvision torchtext=="$TORCHTEXT_VER" \
     --index-url https://download.pytorch.org/whl/cpu
 pip install -q rdkit tqdm omegaconf hydra-core pandas scikit-learn requests
 pip install -q torch-geometric==2.3.0 \
     -f "https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
-
 log "Installed torch ${TORCH_VER}+cpu, torchtext ${TORCHTEXT_VER}, and other deps"
 
 # ─────────── 2. Clone or update TRACER ───────────
@@ -44,9 +43,8 @@ fi
 python <<PY
 from pathlib import Path
 import re
-
-cfg_path = Path("/root/tracer/src/config/config.py")
-txt = cfg_path.read_text()
+cfg = Path("/root/tracer/src/config/config.py")
+txt = cfg.read_text()
 if 'field(' not in txt:
     txt = txt.replace(
         'from dataclasses import dataclass',
@@ -57,11 +55,11 @@ txt = re.sub(
     r'\1: \2 = field(default_factory=\2)',
     txt
 )
-cfg_path.write_text(txt)
+cfg.write_text(txt)
 PY
 log "Patched config.py for dataclass default_factory"
 
-# ─────────── 4. Patch out torchtext imports in code ───────────
+# ─────────── 4. Remove torchtext imports in code ───────────
 python <<PY
 from pathlib import Path
 import re, textwrap
@@ -85,14 +83,13 @@ vocab = _mk
 """).strip()
 
 files = [
-  "/root/tracer/src/Model/Transformer/model.py",
-  "/root/tracer/src/scripts/preprocess.py",
-  "/root/tracer/src/scripts/beam_search.py"
+    "/root/tracer/src/Model/Transformer/model.py",
+    "/root/tracer/src/scripts/preprocess.py",
+    "/root/tracer/src/scripts/beam_search.py"
 ]
-
 for filepath in files:
-    path = Path(filepath)
-    content = path.read_text()
+    p = Path(filepath)
+    content = p.read_text()
     if "torchtext" in content:
         patched = re.sub(
             r'^\s*.*torchtext[^\n]*$',
@@ -100,31 +97,31 @@ for filepath in files:
             content,
             flags=re.M
         )
-        path.write_text(patched)
+        p.write_text(patched)
 PY
-log "Replaced torchtext imports with pure-Python stub in model.py, preprocess.py, beam_search.py"
+log "Replaced torchtext imports with pure-Python stub in code"
 
-# ─────────── 5. Ensure TRACER’s set_up.sh is sourced in the venv ───────────
+# ─────────── 5. Source TRACER’s set_up.sh in venv ───────────
 # shellcheck source=/dev/null
 source "$INSTALL_DIR/src/set_up.sh"
 grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" \
   || echo "source $INSTALL_DIR/src/set_up.sh" >> "$VENV_DIR/bin/activate"
 
 # ─────────── 6. Download pretrained checkpoints ───────────
-for relpath in "${!CHECKPOINTS[@]}"; do
-  dst="/root/tracer/src/ckpts/$relpath"
+for rel in "${!CHECKPOINTS[@]}"; do
+  dst="/root/tracer/src/ckpts/$rel"
   [[ -f $dst ]] && continue
   mkdir -p "$(dirname "$dst")"
-  curl -Ls -o "$dst" "$CKPT_URL/${CHECKPOINTS[$relpath]}"
+  curl -Ls -o "$dst" "$CKPT_URL/${CHECKPOINTS[$rel]}"
 done
 
-# ─────────── 7. Smoke-test (run from src so ./data is correct) ───────────
+# ─────────── 7. Smoke-test using Hydra overrides ───────────
 log "Running MCTS smoke-test …"
 pushd "/root/tracer/src" >/dev/null
 python scripts/mcts.py \
-  --data.input.start_smiles "C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O" \
-  --mcts.num_steps 25
+  mcts.in_smiles_file="C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O" \
+  mcts.n_step=25
 popd >/dev/null
 
-log "✅ TRACER installation and smoke-test complete"
+log "✅ TRACER installation & smoke-test complete"
 log "Activate your environment with: source $VENV_DIR/bin/activate"
