@@ -1,141 +1,122 @@
 #!/usr/bin/env bash
 set -euo pipefail
-log(){ printf '\e[1;34m%s\e[0m\n' "$*"; }
+log(){ printf '\e[1;32m%s\e[0m\n' "$*"; }
 
-###############################################################################
-# Optional wipe
-###############################################################################
 [[ ${1:-} == "--fresh" ]] && { rm -rf /root/tracer; log "removed /root/tracer"; }
 
-###############################################################################
-# Paths & constants
-###############################################################################
-INSTALL_DIR=/root/tracer
-VENV_DIR=$INSTALL_DIR/.venv
-TORCH_VER=2.4.1      # CPU wheel
-CKPT_URL="https://figshare.com/ndownloader/files"
-declare -A CKPT=([Transformer/ckpt_conditional.pth]=45039339
-                 [Transformer/ckpt_unconditional.pth]=45039342
-                 [GCN/GCN.pth]=45039345)
+INSTALL=/root/tracer
+VENV=$INSTALL/.venv
+TORCH=2.4.1
+CKPT=https://figshare.com/ndownloader/files
+declare -A W=([Transformer/ckpt_conditional.pth]=45039339
+              [Transformer/ckpt_unconditional.pth]=45039342
+              [GCN/GCN.pth]=45039345)
 
-###############################################################################
-# 1. venv + core deps
-###############################################################################
-[[ -d $VENV_DIR ]] || python3 -m venv "$VENV_DIR"
-source "$VENV_DIR/bin/activate"
-pip install -qU pip setuptools wheel
-pip install -q torch=="$TORCH_VER"+cpu torchvision \
-  --index-url https://download.pytorch.org/whl/cpu
-pip uninstall -y -q torchtext || true   # ensure binary torchtext is gone
-pip install -q rdkit
-PYG_URL="https://pytorch-geometric.com/whl/torch-${TORCH_VER}+cpu.html"
-pip install -q torch-geometric==2.3.0 -f "$PYG_URL" \
-               hydra-core omegaconf pandas scikit-learn tqdm requests
-log "torch ${TORCH_VER}+cpu and deps installed (no torchtext wheel)"
+# ── 1. venv ────────────────────────────────────────────────────────────────
+[[ -d $VENV ]] || python3 -m venv "$VENV"
+source "$VENV/bin/activate"
+pip -q install -U pip setuptools wheel
+pip -q install torch=="$TORCH"+cpu torchvision --index-url \
+      https://download.pytorch.org/whl/cpu
+pip -q uninstall -y torchtext || true        # never load the binary wheel
+pip -q install rdkit tqdm omegaconf hydra-core pandas scikit-learn requests
+pip -q install torch-geometric==2.3.0 \
+      -f "https://pytorch-geometric.com/whl/torch-${TORCH}+cpu.html"
+log "torch ${TORCH}+cpu and deps installed (torchtext removed)"
 
-###############################################################################
-# 2. clone / pull TRACER
-###############################################################################
-if [[ -d $INSTALL_DIR/src/.git ]]; then
-  git -C "$INSTALL_DIR/src" pull --ff-only
-else
-  git clone --depth 1 https://github.com/sekijima-lab/TRACER.git "$INSTALL_DIR/src"
-fi
+# ── 2. clone TRACER ────────────────────────────────────────────────────────
+[[ -d $INSTALL/src/.git ]] \
+  && git -C "$INSTALL/src" pull --ff-only \
+  || git clone --depth 1 https://github.com/sekijima-lab/TRACER.git "$INSTALL/src"
 
-###############################################################################
-# 3. patch config.py for Python 3.12 dataclass rule
-###############################################################################
+# ── 3. patch config.py (mutable defaults) ──────────────────────────────────
 python - <<'PY'
 from pathlib import Path
 import re
-cfg = Path("/root/tracer/src/config/config.py")
-txt = cfg.read_text()
-if 'field(' not in txt:
-    txt = txt.replace('from dataclasses import dataclass',
-                      'from dataclasses import dataclass, field')
-txt = re.sub(r'(\w+):\s+([A-Za-z_]\w*)\s*=\s*\2\(\)',
-             r'\1: \2 = field(default_factory=\2)', txt)
-cfg.write_text(txt)
+p = Path("/root/tracer/src/config/config.py"); t = p.read_text()
+if 'field(' not in t:
+    t = t.replace('from dataclasses import dataclass',
+                  'from dataclasses import dataclass, field')
+t = re.sub(r'(\w+):\s+([A-Za-z_]\w*)\s*=\s*\2\(\)',
+           r'\1: \2 = field(default_factory=\2)', t)
+p.write_text(t)
 PY
 
-###############################################################################
-# 4. patch Model/Transformer/model.py (done earlier but idempotent)
-###############################################################################
+# ── 4. sitecustomize stub (pure-Python torchtext) ───────────────────────────
 python - <<'PY'
-from pathlib import Path, re, textwrap
-mdl = Path("/root/tracer/src/Model/Transformer/model.py")
-txt = mdl.read_text()
-if 'torchtext.vocab.vocab' in txt:
-    txt = re.sub(r'import\s+torchtext\.vocab\.vocab\s+as\s+Vocab',
-                 textwrap.dedent("""
-                 # patched: replace torchtext with minimal stub
-                 from types import SimpleNamespace as _SN
-                 def _mk(counter=None, specials=()):
-                     stoi, idx = {}, 0
-                     for tok in specials or []:
-                         if tok not in stoi:
-                             stoi[tok] = idx; idx += 1
-                     if counter:
-                         for tok in counter:
-                             if tok not in stoi:
-                                 stoi[tok] = idx; idx += 1
-                     return _SN(stoi=stoi, itos=list(stoi))
-                 Vocab = _SN(make_vocab=_mk)
-                 """).strip(),
-                 txt, flags=re.M, count=1)
-    mdl.write_text(txt)
+import site, pathlib, textwrap
+code = """
+import sys, types
+def _vocab(counter=None, specials=()):
+    stoi, idx = {}, 0
+    for tok in specials or []:
+        if tok not in stoi:
+            stoi[tok] = idx; idx += 1
+    if counter:
+        for tok in counter:
+            if tok not in stoi:
+                stoi[tok] = idx; idx += 1
+    return types.SimpleNamespace(stoi=stoi, itos=list(stoi))
+_mod = types.ModuleType('torchtext.vocab.vocab'); _mod.make_vocab=_vocab
+_pkg = types.ModuleType('torchtext.vocab'); _pkg.vocab=_mod
+_root = types.ModuleType('torchtext'); _root.vocab=_pkg
+sys.modules.update({'torchtext':_root,'torchtext.vocab':_pkg,
+                    'torchtext.vocab.vocab':_mod})
+"""
+path = pathlib.Path(site.getsitepackages()[0])/'sitecustomize.py'
+path.write_text(textwrap.dedent(code).lstrip()+"\n")
 PY
+log "sitecustomize stub written"
 
-###############################################################################
-# 5. **NEW** patch scripts/preprocess.py to drop torchtext import
-###############################################################################
+# ── 5. patch model.py and preprocess.py (failsafe) ─────────────────────────
 python - <<'PY'
-from pathlib import Path, re, textwrap
-pre = Path("/root/tracer/src/scripts/preprocess.py")
-txt = pre.read_text()
-if 'from torchtext.vocab import vocab' in txt:
-    txt = re.sub(r'from\s+torchtext\.vocab\s+import\s+vocab',
-                 textwrap.dedent("""
-                 # patched: drop torchtext
-                 from types import SimpleNamespace as _SN
-                 def vocab(counter=None, specials=()):
-                     stoi, idx = {}, 0
-                     for tok in specials or []:
-                         if tok not in stoi:
-                             stoi[tok] = idx; idx += 1
-                     if counter:
-                         for tok in counter:
-                             if tok not in stoi:
-                                 stoi[tok] = idx; idx += 1
-                     return _SN(stoi=stoi, itos=list(stoi))
-                 """).strip(),
-                 txt, flags=re.M, count=1)
-    pre.write_text(txt)
+from pathlib import Path
+import re, textwrap
+
+def patch(file, pattern):
+    txt = file.read_text()
+    if re.search(pattern, txt):
+        stub = textwrap.dedent("""
+        # fallback stub: replaces torchtext vocab
+        from types import SimpleNamespace as _SN
+        def _vocab(counter=None, specials=()):
+            stoi, idx = {}, 0
+            for tok in specials or []:
+                if tok not in stoi:
+                    stoi[tok] = idx; idx += 1
+            if counter:
+                for tok in counter:
+                    if tok not in stoi:
+                        stoi[tok] = idx; idx += 1
+            return _SN(stoi=stoi, itos=list(stoi))
+        vocab = _vocab if 'from torchtext' in locals() else None
+        Vocab = _SN(make_vocab=_vocab)
+        """).strip()
+        txt = re.sub(pattern, stub, txt, flags=re.M)
+        file.write_text(txt)
+
+patch(Path("/root/tracer/src/Model/Transformer/model.py"),
+      r'^\s*import\s+torchtext\.vocab\.vocab.*$')
+patch(Path("/root/tracer/src/scripts/preprocess.py"),
+      r'^\s*from\s+torchtext\.vocab\s+import\s+vocab.*$')
 PY
-log "scripts/preprocess.py import patched"
+log "TorchText imports patched out of codebase"
 
-###############################################################################
-# 6. add TRACER to PYTHONPATH in venv
-###############################################################################
-# shellcheck source=/dev/null
-source "$INSTALL_DIR/src/set_up.sh"
-grep -qxF "source $INSTALL_DIR/src/set_up.sh" "$VENV_DIR/bin/activate" || \
-  echo "source $INSTALL_DIR/src/set_up.sh" >> "$VENV_DIR/bin/activate"
+# ── 6. make TRACER importable
+source "$INSTALL/src/set_up.sh"
+grep -qxF "source $INSTALL/src/set_up.sh" "$VENV/bin/activate" \
+  || echo "source $INSTALL/src/set_up.sh" >> "$VENV/bin/activate"
 
-###############################################################################
-# 7. checkpoints
-###############################################################################
-for rel in "${!CKPT[@]}"; do
-  f="$INSTALL_DIR/src/ckpts/$rel"
-  [[ -f $f ]] || { mkdir -p "$(dirname "$f")"; curl -Ls -o "$f" "$CKPT_URL/${CKPT[$rel]}"; }
+# ── 7. download weights
+for rel id in "${!W[@]}"; do
+  tgt="$INSTALL/src/ckpts/$rel"
+  [[ -f $tgt ]] || { mkdir -p "$(dirname "$tgt")"; curl -Ls -o "$tgt" "$CKPT/${W[$rel]}"; }
 done
 
-###############################################################################
-# 8. smoke-test
-###############################################################################
+# ── 8. smoke-test
 log "running MCTS smoke-test …"
-python "$INSTALL_DIR/src/scripts/mcts.py" \
+python "$INSTALL/src/scripts/mcts.py" \
   --data.input.start_smiles "C1=CC(=C(C=C1)O)C2=CC(=O)C3=C(C=C(C=C3O2)O)O" \
   --mcts.num_steps 25
-log "✅  TRACER installed & tested — activate via:"
-log "   source $VENV_DIR/bin/activate"
+log "✅  TRACER installed & tested — activate with:"
+log "   source $VENV/bin/activate"
