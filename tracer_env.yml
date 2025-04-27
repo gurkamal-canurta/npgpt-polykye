@@ -14,7 +14,7 @@ dependencies:
   - torchaudio
   - torchtext=0.15.2
   - tqdm=4.65.0
-  - rdkit=2022.03.2            # RDKit from conda-forge :contentReference[oaicite:12]{index=12}
+  - rdkit          # RDKit from conda-forge :contentReference[oaicite:12]{index=12}
   - pip:
       - hydra-core==1.3.2
       - json5==0.9.14
