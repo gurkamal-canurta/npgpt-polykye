@@ -14,7 +14,6 @@ dependencies:
   - torchaudio
   - torchtext=0.15.2
   - tqdm=4.65.0
-  - rdkit          # RDKit from conda-forge :contentReference[oaicite:12]{index=12}
   - pip:
       - hydra-core==1.3.2
       - json5==0.9.14
@@ -22,3 +21,4 @@ dependencies:
       - scikit-learn==1.2.2
       - torch-geometric==2.3.0 # CPU PyG via pip :contentReference[oaicite:13]{index=13}
       - torchdata==0.6.1
+      - rdkit
