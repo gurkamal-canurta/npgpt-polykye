@@ -16,7 +16,7 @@ source .venv/bin/activate
 
 # 3. Fetch requirements.txt from GitHub
 echo "📄 Downloading requirements.txt…"
-curl -LsSf https://raw.githubusercontent.com/gdeol4/npgpt-polykye/main/drugchat_requirements.txt -o requirements.txt
+curl -LsSf https://raw.githubusercontent.com/gurkamal-canurta/npgpt-polykye/main/drugchat_requirements.txt -o requirements.txt
 
 # 4. Sync with uv pip sync
 echo "🔄 Installing dependencies…"
