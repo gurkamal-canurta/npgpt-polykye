@@ -11,4 +11,9 @@ datasets
 evaluate
 pillow
 huggingface-hub
+transformers
+numpy
+rdkit
+scikit-learn
+
 # numpy, torch, transformers, rdkit, scikit-learn already satisfied
